@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radio-Browser Spirit Box & Player</title>
+    <title>Native Stream Spirit Box & Radio</title>
     <style>
         body {
             background-color: #121212;
@@ -118,7 +118,7 @@
     <div class="speaker-grille"></div>
 
     <div class="dial-panel">
-        <div class="dial-scale">RADIO-BROWSER REALTIME SWEEP</div>
+        <div class="dial-scale">NATIVE AUDIO DECODER SWEEPER</div>
         <div id="freqDisplay" class="freq-readout">POWER OFF</div>
         <div id="stationDisplay" class="station-name">---</div>
     </div>
@@ -127,13 +127,13 @@
         <div class="control-row">
             <label>モード</label>
             <select id="modeSelect">
-                <option value="spirit">スピリットボックス (API Sweep)</option>
-                <option value="normal">通常ラジオ (LIVE Stream)</option>
+                <option value="spirit">スピリットボックス (Fast Sweep)</option>
+                <option value="normal">通常ラジオ (Live Stream)</option>
             </select>
         </div>
 
         <div class="control-row">
-            <label>取得カテゴリ</label>
+            <label>ジャンル/地域</label>
             <select id="tagSelect">
                 <option value="japan">日本 (Japan)</option>
                 <option value="news">ニュース (News)</option>
@@ -145,9 +145,9 @@
         <div class="control-row">
             <label>スキャン速度</label>
             <select id="speedSelect">
-                <option value="300">高速 (300ms)</option>
-                <option value="600" selected>通常 (600ms)</option>
-                <option value="1200">低速 (1200ms)</option>
+                <option value="400">高速 (400ms)</option>
+                <option value="800" selected>通常 (800ms)</option>
+                <option value="1500">低速 (1500ms)</option>
             </select>
         </div>
 
@@ -155,8 +155,8 @@
     </div>
 </div>
 
-<!-- ストリーミング再生用Audioタグ -->
-<audio id="radioAudio" style="display:none;" crossorigin="anonymous"></audio>
+<!-- ネイティブデコード再生用Audioタグ（独自fetchは挟まない） -->
+<audio id="radioAudio" preload="none" crossorigin="anonymous"></audio>
 
 <script>
 let isPowerOn = false;
@@ -179,11 +179,11 @@ function triggerHaptic(pattern) {
     }
 }
 
-// Radio-Browser API からラジオ局データをフェッチ
+// 局リストの取得（APIは局URLの検索リストを得るためだけに使う）
 async function fetchRadioStations() {
-    stationDisplay.textContent = "APIから局データを取得中...";
+    stationDisplay.textContent = "局リスト更新中...";
     const tag = tagSelect.value;
-    let url = "https://at1.api.radio-browser.info/json/stations/search?limit=60&has_extended_info=true";
+    let url = "https://at1.api.radio-browser.info/json/stations/search?limit=100&has_extended_info=true";
 
     if (tag === 'japan') {
         url += "&countrycode=JP";
@@ -194,23 +194,70 @@ async function fetchRadioStations() {
     try {
         const response = await fetch(url);
         const data = await response.json();
-        // 有効なURLを持っている局だけにフィルター
-        radioStations = data.filter(s => s.url_resolved && s.url_resolved.startsWith("http"));
         
+        // HTTPSに変換可能なURL、または最初からHTTPSの配信局を優先して抽出
+        radioStations = data.map(s => {
+            let streamUrl = s.url_resolved || s.url;
+            if (streamUrl && streamUrl.startsWith("http://")) {
+                // HTTPS混在エラー(Mixed Content)対策：強制的にhttpsへ書き換え試行
+                streamUrl = streamUrl.replace("http://", "https://");
+            }
+            return { ...s, cleanUrl: streamUrl };
+        }).filter(s => s.cleanUrl && s.cleanUrl.startsWith("https://"));
+
         if (radioStations.length === 0) {
-            stationDisplay.textContent = "該当するラジオ局が見つかりませんでした";
+            stationDisplay.textContent = "HTTPS対応局が見つかりませんでした";
             return false;
         }
-        stationDisplay.textContent = `${radioStations.length} 局取得完了`;
+        stationDisplay.textContent = `${radioStations.length} 局セット完了`;
         return true;
     } catch (err) {
-        alert(err.message);
-
         console.error(err);
-        stationDisplay.textContent = "API取得エラー: " + err.message;
+        stationDisplay.textContent = "リスト取得エラー";
         return false;
     }
 }
+
+// ネイティブデコーダー（<audio>）に直接URLを叩き込む処理
+function playNextStation() {
+    if (!isPowerOn || radioStations.length === 0) return;
+
+    currentStationIndex = (currentStationIndex + 1) % radioStations.length;
+    const station = radioStations[currentStationIndex];
+
+    // UI表示の更新
+    const freq = station.frequency ? `${station.frequency} MHz` : `CH-${(currentStationIndex + 1).toString().padStart(2, '0')}`;
+    freqDisplay.textContent = freq;
+    stationDisplay.textContent = `${station.name} (${station.countrycode || 'INT'})`;
+
+    // ⭐️ JSでのfetchやBuffer化は一切せず、純粋な<audio.src>のネイティブデコードに任せる
+    radioAudio.src = station.cleanUrl;
+    
+    const playPromise = radioAudio.play();
+    if (playPromise !== undefined) {
+        playPromise.catch(error => {
+            // 自動再生拒否やフォーマット非対応で弾かれたら、即座に次の局へスキップ
+            console.warn("ネイティブ再生スキップ:", error.message);
+            if (modeSelect.value === 'spirit') {
+                // スピリットボックス中ならタイマー任せにするか即時スキップ
+            }
+        });
+    }
+
+    triggerHaptic(15);
+}
+
+// ⭐️ エラーハンドリング：ネットワークエラーやLoad failedが出たら即座に次の局へ自動スキップ！
+radioAudio.addEventListener('error', (e) => {
+    console.warn("Load failed / NetworkError を検知。次の局へネイティブエスケープします。");
+    if (isPowerOn) {
+        triggerHaptic([10, 10]); // 混信感のある軽いハプティクス
+        // 詰まらないように100ms後に次の局へバトンタッチ
+        setTimeout(() => {
+            if (isPowerOn) playNextStation();
+        }, 100);
+    }
+});
 
 // 電源ボタン押下時
 powerBtn.addEventListener('click', async () => {
@@ -238,39 +285,17 @@ function startRadio() {
     const mode = modeSelect.value;
 
     if (mode === 'normal') {
-        // --- 通常ラジオモード：1局を選んでじっくり再生 ---
-        const station = radioStations[0];
-        playStation(station);
+        // 通常ラジオ：1局をネイティブ固定再生
+        playNextStation();
     } else {
-        // --- スピリットボックスモード：Radio-Browser APIのストリームを高速ザッピング ---
+        // スピリットボックス：指定した速度でネイティブデコーダーを次々ザッピング
         const speed = parseInt(speedSelect.value, 10);
+        playNextStation();
         
         sweepTimer = setInterval(() => {
-            currentStationIndex = (currentStationIndex + 1) % radioStations.length;
-            const station = radioStations[currentStationIndex];
-            
-            // 高速切り替え（ザッピング）
-            playStation(station);
-            
-            // スキャン中のガチャガチャ感をハプティクスで手元に再現
-            triggerHaptic(20);
+            playNextStation();
         }, speed);
     }
-}
-
-function playStation(station) {
-    if (!station) return;
-
-    // 表示更新（周波数が登録されていれば表示、無ければ仮の表示）
-    const freq = station.frequency ? `${station.frequency} MHz` : `CH-${station.stationuuid.substring(0,4)}`;
-    freqDisplay.textContent = freq;
-    stationDisplay.textContent = `${station.name} (${station.countrycode || 'INT'})`;
-
-    // Audioタグでストリーム再生
-    radioAudio.src = station.url_resolved;
-    radioAudio.play().catch(e => {
-        // ストリームの読み込み失敗やCORSエラー時はスキップ処理
-    });
 }
 
 function stopRadio() {
@@ -278,17 +303,18 @@ function stopRadio() {
     powerBtn.classList.remove('active');
     if (sweepTimer) clearInterval(sweepTimer);
     radioAudio.pause();
-    radioAudio.src = "";
+    radioAudio.removeAttribute('src'); // ソースを完全に解放
+    radioAudio.load();
     freqDisplay.textContent = "POWER OFF";
     stationDisplay.textContent = "---";
 }
 
-// 設定変更時のリアルタイム反映
+// コントロール変更時のリアルタイム反映
 modeSelect.addEventListener('change', () => {
     triggerHaptic(30);
     if (isPowerOn) {
-        stopRadio();
-        powerBtn.click();
+        if (sweepTimer) clearInterval(sweepTimer);
+        startRadio();
     }
 });
 
@@ -297,8 +323,8 @@ tagSelect.addEventListener('change', async () => {
     if (isPowerOn) {
         if (sweepTimer) clearInterval(sweepTimer);
         radioAudio.pause();
-        await fetchRadioStations();
-        startRadio();
+        const success = await fetchRadioStations();
+        if (success) startRadio();
     }
 });
 
