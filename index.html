@@ -204,8 +204,10 @@ async function fetchRadioStations() {
         stationDisplay.textContent = `${radioStations.length} 局取得完了`;
         return true;
     } catch (err) {
+        alert(err.message);
+
         console.error(err);
-        stationDisplay.textContent = "API取得エラー";
+        stationDisplay.textContent = "API取得エラー: " + err.message;
         return false;
     }
 }
