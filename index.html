@@ -212,8 +212,9 @@ async function fetchRadioStations() {
         stationDisplay.textContent = `${radioStations.length} 局セット完了`;
         return true;
     } catch (err) {
+        alert(err.message)
         console.error(err);
-        stationDisplay.textContent = "リスト取得エラー";
+        stationDisplay.textContent = "リスト取得エラー: "+err.message;
         return false;
     }
 }
