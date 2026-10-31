@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radio-Browser Spirit Box & Player</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            user-select: none;
+        }
+        .radio-body {
+            background: linear-gradient(145deg, #232323, #181818);
+            border: 4px solid #3d3d3d;
+            border-radius: 16px;
+            padding: 24px;
+            width: 360px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.9), inset 0 2px 4px rgba(255,255,255,0.1);
+        }
+        .speaker-grille {
+            background: repeating-linear-gradient(90deg, #111, #111 3px, #222 3px, #222 7px);
+            border: 2px inset #2a2a2a;
+            height: 40px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+        .dial-panel {
+            background-color: #081008;
+            border: 3px inset #1c2d1c;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+        .dial-scale {
+            font-size: 10px;
+            color: #486e48;
+            letter-spacing: 2px;
+            margin-bottom: 6px;
+        }
+        .freq-readout {
+            font-size: 22px;
+            color: #33ff33;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(51, 255, 51, 0.7);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-height: 30px;
+        }
+        .station-name {
+            font-size: 12px;
+            color: #ffcc00;
+            margin-top: 4px;
+            height: 16px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .control-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #222;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #333;
+        }
+        label { font-size: 12px; color: #aaa; }
+        select {
+            background: #111;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 6px;
+            border-radius: 4px;
+            font-family: inherit;
+            outline: none;
+            max-width: 180px;
+        }
+        .power-btn {
+            background: linear-gradient(to bottom, #a93226, #78281f);
+            color: #fff;
+            border: 2px outset #c0392b;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            margin-top: 6px;
+        }
+        .power-btn:active {
+            border-style: inset;
+            transform: translateY(2px);
+        }
+        .power-btn.active {
+            background: linear-gradient(to bottom, #27ae60, #1e8449);
+            border-color: #2ecc71;
+            box-shadow: 0 0 12px rgba(46, 204, 113, 0.6);
+        }
+    </style>
+</head>
+<body>
+
+<div class="radio-body">
+    <div class="speaker-grille"></div>
+
+    <div class="dial-panel">
+        <div class="dial-scale">RADIO-BROWSER REALTIME SWEEP</div>
+        <div id="freqDisplay" class="freq-readout">POWER OFF</div>
+        <div id="stationDisplay" class="station-name">---</div>
+    </div>
+
+    <div class="controls">
+        <div class="control-row">
+            <label>モード</label>
+            <select id="modeSelect">
+                <option value="spirit">スピリットボックス (API Sweep)</option>
+                <option value="normal">通常ラジオ (LIVE Stream)</option>
+            </select>
+        </div>
+
+        <div class="control-row">
+            <label>取得カテゴリ</label>
+            <select id="tagSelect">
+                <option value="japan">日本 (Japan)</option>
+                <option value="news">ニュース (News)</option>
+                <option value="pop">Pop Music</option>
+                <option value="all" selected>世界全体 (All Global)</option>
+            </select>
+        </div>
+
+        <div class="control-row">
+            <label>スキャン速度</label>
+            <select id="speedSelect">
+                <option value="300">高速 (300ms)</option>
+                <option value="600" selected>通常 (600ms)</option>
+                <option value="1200">低速 (1200ms)</option>
+            </select>
+        </div>
+
+        <button id="powerBtn" class="power-btn">POWER ON / OFF</button>
+    </div>
+</div>
+
+<!-- ストリーミング再生用Audioタグ -->
+<audio id="radioAudio" style="display:none;" crossorigin="anonymous"></audio>
+
+<script>
+let isPowerOn = false;
+let radioStations = [];
+let sweepTimer = null;
+let currentStationIndex = 0;
+
+const powerBtn = document.getElementById('powerBtn');
+const modeSelect = document.getElementById('modeSelect');
+const tagSelect = document.getElementById('tagSelect');
+const speedSelect = document.getElementById('speedSelect');
+const freqDisplay = document.getElementById('freqDisplay');
+const stationDisplay = document.getElementById('stationDisplay');
+const radioAudio = document.getElementById('radioAudio');
+
+// ハプティクス（触覚）フィードバック
+function triggerHaptic(pattern) {
+    if ('vibrate' in navigator) {
+        try { navigator.vibrate(pattern); } catch (e) {}
+    }
+}
+
+// Radio-Browser API からラジオ局データをフェッチ
+async function fetchRadioStations() {
+    stationDisplay.textContent = "APIから局データを取得中...";
+    const tag = tagSelect.value;
+    let url = "https://at1.api.radio-browser.info/json/stations/search?limit=60&has_extended_info=true";
+
+    if (tag === 'japan') {
+        url += "&countrycode=JP";
+    } else if (tag !== 'all') {
+        url += `&tag=${tag}`;
+    }
+
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        // 有効なURLを持っている局だけにフィルター
+        radioStations = data.filter(s => s.url_resolved && s.url_resolved.startsWith("http"));
+        
+        if (radioStations.length === 0) {
+            stationDisplay.textContent = "該当するラジオ局が見つかりませんでした";
+            return false;
+        }
+        stationDisplay.textContent = `${radioStations.length} 局取得完了`;
+        return true;
+    } catch (err) {
+        console.error(err);
+        stationDisplay.textContent = "API取得エラー";
+        return false;
+    }
+}
+
+// 電源ボタン押下時
+powerBtn.addEventListener('click', async () => {
+    triggerHaptic([40, 30, 60]);
+
+    if (!isPowerOn) {
+        isPowerOn = true;
+        powerBtn.classList.add('active');
+        freqDisplay.textContent = "CONNECTING...";
+
+        const success = await fetchRadioStations();
+        if (success) {
+            startRadio();
+        } else {
+            isPowerOn = false;
+            powerBtn.classList.remove('active');
+            freqDisplay.textContent = "ERROR";
+        }
+    } else {
+        stopRadio();
+    }
+});
+
+function startRadio() {
+    const mode = modeSelect.value;
+
+    if (mode === 'normal') {
+        // --- 通常ラジオモード：1局を選んでじっくり再生 ---
+        const station = radioStations[0];
+        playStation(station);
+    } else {
+        // --- スピリットボックスモード：Radio-Browser APIのストリームを高速ザッピング ---
+        const speed = parseInt(speedSelect.value, 10);
+        
+        sweepTimer = setInterval(() => {
+            currentStationIndex = (currentStationIndex + 1) % radioStations.length;
+            const station = radioStations[currentStationIndex];
+            
+            // 高速切り替え（ザッピング）
+            playStation(station);
+            
+            // スキャン中のガチャガチャ感をハプティクスで手元に再現
+            triggerHaptic(20);
+        }, speed);
+    }
+}
+
+function playStation(station) {
+    if (!station) return;
+
+    // 表示更新（周波数が登録されていれば表示、無ければ仮の表示）
+    const freq = station.frequency ? `${station.frequency} MHz` : `CH-${station.stationuuid.substring(0,4)}`;
+    freqDisplay.textContent = freq;
+    stationDisplay.textContent = `${station.name} (${station.countrycode || 'INT'})`;
+
+    // Audioタグでストリーム再生
+    radioAudio.src = station.url_resolved;
+    radioAudio.play().catch(e => {
+        // ストリームの読み込み失敗やCORSエラー時はスキップ処理
+    });
+}
+
+function stopRadio() {
+    isPowerOn = false;
+    powerBtn.classList.remove('active');
+    if (sweepTimer) clearInterval(sweepTimer);
+    radioAudio.pause();
+    radioAudio.src = "";
+    freqDisplay.textContent = "POWER OFF";
+    stationDisplay.textContent = "---";
+}
+
+// 設定変更時のリアルタイム反映
+modeSelect.addEventListener('change', () => {
+    triggerHaptic(30);
+    if (isPowerOn) {
+        stopRadio();
+        powerBtn.click();
+    }
+});
+
+tagSelect.addEventListener('change', async () => {
+    triggerHaptic(25);
+    if (isPowerOn) {
+        if (sweepTimer) clearInterval(sweepTimer);
+        radioAudio.pause();
+        await fetchRadioStations();
+        startRadio();
+    }
+});
+
+speedSelect.addEventListener('change', () => {
+    triggerHaptic(20);
+    if (isPowerOn && modeSelect.value === 'spirit') {
+        if (sweepTimer) clearInterval(sweepTimer);
+        startRadio();
+    }
+});
+</script>
+
+</body>
+</html>
